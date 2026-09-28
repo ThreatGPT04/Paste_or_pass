@@ -202,10 +202,11 @@ const SUPABASE_URL = "https://gezodihpfrqkjozfbdpp.supabase.co";
 const SUPABASE_KEY = "sb_publishable_tmvIPwwPGHPAjtn8vk4_kQ_G0va495n";
 
 function saveToSupabase(entry){
+  /* No keepalive: some browsers refuse keepalive requests that need a CORS
+     preflight (the apikey header triggers one), so the row never arrived. */
   try {
     fetch(`${SUPABASE_URL}/rest/v1/scores`, {
       method: "POST",
-      keepalive: true,               /* still sends if the player closes the tab */
       headers: {
         "Content-Type": "application/json",
         "apikey": SUPABASE_KEY,
@@ -216,11 +217,14 @@ function saveToSupabase(entry){
         last_name: entry.lastName.slice(0, 40),
         score: entry.score,
         total: entry.total,
-        grade: entry.grade,
+        grade: entry.grade.slice(0, 80),
         fooled: entry.fooled
       })
-    }).catch(() => {});
-  } catch { /* never block the player */ }
+    }).then(async res => {
+      if (res.ok) console.info("[Paste or Pass] score saved");
+      else console.warn("[Paste or Pass] score NOT saved:", res.status, await res.text());
+    }).catch(err => console.warn("[Paste or Pass] score NOT saved:", err));
+  } catch (err) { console.warn("[Paste or Pass] score NOT saved:", err); /* never block the player */ }
 }
 
 const ROUNDS = [
