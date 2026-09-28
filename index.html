@@ -201,41 +201,76 @@ const SECONDS_PER_ROUND = 20;
 const SUPABASE_URL = "https://gezodihpfrqkjozfbdpp.supabase.co";
 const SUPABASE_KEY = "sb_publishable_tmvIPwwPGHPAjtn8vk4_kQ_G0va495n";
 
-function saveToSupabase(entry, attempt = 1){
+/* Scores wait in an outbox on this device until Supabase accepts them.
+   Some networks block supabase.co (DNS lookup fails), so a score that can't
+   be sent is kept and resent every 15 s, on reconnect and on the next page
+   load, e.g. once the phone switches to mobile data. */
+const OUTBOX_KEY = "pop-outbox";
+let outboxMem = [];
+function readOutbox(){ try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]"); } catch { return outboxMem; } }
+function writeOutbox(list){ outboxMem = list; try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(list)); } catch {} }
+
+function showSaveStatus(id, text, ok){
+  const el = document.getElementById("save-status");
+  if (el && el.dataset.id === id) { el.textContent = text; el.style.color = ok ? "var(--steel)" : "#FF8A80"; }
+}
+
+function postScore(row){
   /* No keepalive: some browsers refuse keepalive requests that need a CORS
      preflight (the apikey header triggers one), so the row never arrived. */
-  const show = (text, ok) => {
-    const el = document.getElementById("save-status");
-    if (el) { el.textContent = text; el.style.color = ok ? "var(--steel)" : "#FF8A80"; }
-  };
-  const failed = reason => {
-    console.warn("[Paste or Pass] score NOT saved:", reason);
-    if (attempt < 3) { show("Saving score… retrying", true); setTimeout(() => saveToSupabase(entry, attempt + 1), 2000 * attempt); }
-    else show("Score NOT saved (" + reason + "). Please tell the booth staff.", false);
-  };
+  return fetch(`${SUPABASE_URL}/rest/v1/scores`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_KEY,
+      "Prefer": "return=minimal"   /* insert only, ask for nothing back */
+    },
+    body: JSON.stringify(row)
+  });
+}
+
+let flushing = false, flushAgain = false, flushTimer = null;
+async function flushOutbox(){
+  if (flushing) { flushAgain = true; return; }
+  flushing = true; flushAgain = false;
   try {
-    fetch(`${SUPABASE_URL}/rest/v1/scores`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "apikey": SUPABASE_KEY,
-        "Prefer": "return=minimal"   /* insert only, ask for nothing back */
-      },
-      body: JSON.stringify({
-        first_name: entry.firstName.slice(0, 40),
-        last_name: entry.lastName.slice(0, 40),
-        score: entry.score,
-        total: entry.total,
-        grade: entry.grade.slice(0, 80),
-        fooled: entry.fooled
-      })
-    }).then(async res => {
-      if (res.ok) { console.info("[Paste or Pass] score saved"); show("✓ Score saved", true); }
-      else if (res.status >= 500) failed(res.status);
-      else { const body = await res.text(); console.warn("[Paste or Pass] score NOT saved:", res.status, body);
-             show("Score NOT saved (" + res.status + "). Please tell the booth staff.", false); }
-    }).catch(err => failed(err && err.message ? err.message : "network error"));
-  } catch (err) { failed(err && err.message ? err.message : "error"); /* never block the player */ }
+    for (const item of readOutbox()) {
+      let keep = false;
+      try {
+        const res = await postScore(item.row);
+        if (res.ok) { console.info("[Paste or Pass] score saved"); showSaveStatus(item.id, "✓ Score saved", true); }
+        else if (res.status >= 500) keep = true;
+        else { /* rejected for good (bad data or key): retrying won't help */
+          console.warn("[Paste or Pass] score NOT saved:", res.status, await res.text());
+          showSaveStatus(item.id, "Score NOT saved (" + res.status + "). Please tell the booth staff.", false);
+        }
+      } catch (err) {
+        keep = true;
+        console.warn("[Paste or Pass] score NOT saved yet:", err && err.message ? err.message : err);
+        showSaveStatus(item.id, "Can't reach the score server on this network. Your score is kept on this phone and will send automatically. Try switching to mobile data and keep this page open.", false);
+      }
+      if (!keep) writeOutbox(readOutbox().filter(x => x.id !== item.id));
+    }
+  } finally { flushing = false; }
+  if (flushAgain) return flushOutbox();
+  clearTimeout(flushTimer);
+  if (readOutbox().length) flushTimer = setTimeout(flushOutbox, 15000);
+}
+window.addEventListener("online", flushOutbox);
+
+function saveToSupabase(entry){
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const el = document.getElementById("save-status");
+  if (el) el.dataset.id = id;
+  writeOutbox(readOutbox().concat({ id, row: {
+    first_name: entry.firstName.slice(0, 40),
+    last_name: entry.lastName.slice(0, 40),
+    score: entry.score,
+    total: entry.total,
+    grade: entry.grade.slice(0, 80),
+    fooled: entry.fooled
+  }}));
+  flushOutbox().catch(() => {}); /* never block the player */
 }
 
 const ROUNDS = [
@@ -593,6 +628,7 @@ document.addEventListener("keydown", e => {
 });
 
 renderRegister();
+flushOutbox().catch(() => {}); /* send anything left over from an earlier visit */
 </script>
 </body>
 </html>
