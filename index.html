@@ -201,9 +201,18 @@ const SECONDS_PER_ROUND = 20;
 const SUPABASE_URL = "https://gezodihpfrqkjozfbdpp.supabase.co";
 const SUPABASE_KEY = "sb_publishable_tmvIPwwPGHPAjtn8vk4_kQ_G0va495n";
 
-function saveToSupabase(entry){
+function saveToSupabase(entry, attempt = 1){
   /* No keepalive: some browsers refuse keepalive requests that need a CORS
      preflight (the apikey header triggers one), so the row never arrived. */
+  const show = (text, ok) => {
+    const el = document.getElementById("save-status");
+    if (el) { el.textContent = text; el.style.color = ok ? "var(--steel)" : "#FF8A80"; }
+  };
+  const failed = reason => {
+    console.warn("[Paste or Pass] score NOT saved:", reason);
+    if (attempt < 3) { show("Saving score… retrying", true); setTimeout(() => saveToSupabase(entry, attempt + 1), 2000 * attempt); }
+    else show("Score NOT saved (" + reason + "). Please tell the booth staff.", false);
+  };
   try {
     fetch(`${SUPABASE_URL}/rest/v1/scores`, {
       method: "POST",
@@ -221,10 +230,12 @@ function saveToSupabase(entry){
         fooled: entry.fooled
       })
     }).then(async res => {
-      if (res.ok) console.info("[Paste or Pass] score saved");
-      else console.warn("[Paste or Pass] score NOT saved:", res.status, await res.text());
-    }).catch(err => console.warn("[Paste or Pass] score NOT saved:", err));
-  } catch (err) { console.warn("[Paste or Pass] score NOT saved:", err); /* never block the player */ }
+      if (res.ok) { console.info("[Paste or Pass] score saved"); show("✓ Score saved", true); }
+      else if (res.status >= 500) failed(res.status);
+      else { const body = await res.text(); console.warn("[Paste or Pass] score NOT saved:", res.status, body);
+             show("Score NOT saved (" + res.status + "). Please tell the booth staff.", false); }
+    }).catch(err => failed(err && err.message ? err.message : "network error"));
+  } catch (err) { failed(err && err.message ? err.message : "error"); /* never block the player */ }
 }
 
 const ROUNDS = [
@@ -552,7 +563,6 @@ function renderResult(){
     fooled: fooledThisRun,
     at: Date.now()
   };
-  saveToSupabase(entry); /* automatic — no player action needed */
 
   const first = session.participant ? session.participant.firstName : "";
   const last = session.participant ? session.participant.lastName : "";
@@ -563,11 +573,13 @@ function renderResult(){
     ${first ? `<p style="color:#C9C6C0;font-size:16px;margin:0 0 4px">${first}, here's how you did:</p>` : ""}
     <p class="score">${score}<small> / ${ROUNDS.length}</small></p>
     <div class="grade">${grade}</div>
+    <p id="save-status" style="color:var(--steel);font-size:15px;margin:8px 0 0">Saving score…</p>
     <p class="rule" style="margin:22px 0 0">No website, error message or IT team will ever ask you to paste something into Run, PowerShell, Terminal or the File Explorer address bar. If a fix asks you to paste, it is not a fix.</p>
     <div class="foot">
       <button class="big" id="again">Next player</button>
     </div>
     ${t}`;
+  saveToSupabase(entry); /* automatic — no player action needed */
   fooledThisRun = false;
   document.getElementById("again").onclick = () => { session.participant = null; renderRegister(); };
   document.getElementById("again").focus();
